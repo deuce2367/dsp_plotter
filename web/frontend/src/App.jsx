@@ -206,6 +206,15 @@ function App() {
   const [tunerParams, setTunerParams] = useState({center: 0, bw: 0, start: 0, dur: 0});
   const [tunerOutName, setTunerOutName] = useState('');
   const [tunerOversample, setTunerOversample] = useState(1);
+
+  const [showDemodModal, setShowDemodModal] = useState(false);
+  const [demodParams, setDemodParams] = useState({center: 0, bw: 0});
+  const [demodType, setDemodType] = useState('FM');
+  const [demodAudioRate, setDemodAudioRate] = useState(48000);
+  const [demodOutName, setDemodOutName] = useState('');
+  
+  const [demodAudioUrl, setDemodAudioUrl] = useState(null);
+  const [demodAudioSpecUrl, setDemodAudioSpecUrl] = useState(null);
   
   const [editTimecode, setEditTimecode] = useState('');
   const [editFreq, setEditFreq] = useState('');
@@ -733,6 +742,9 @@ function App() {
 
   const startTuner = async () => {
     setShowTunerModal(false);
+    
+    // Original tuner code... (already in the file, don't want to replace all of it!)
+    // Wait, I am replacing lines 1475 to 1493? I need to look at what I'm replacing.
     setLoading(true);
     try {
       const res = await fetch('/api/run/tuner', {
@@ -759,9 +771,80 @@ function App() {
         setZoomBounds(null);
       }
     } catch(e) {
-      alert("Error: " + e);
+      alert("Request failed: " + e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  const openDemod = () => {
+    if (!fileInfo) return alert("No file selected.");
+    let proposed = file.replace('.prm', '') + '_demod.wav';
+    setDemodParams({center: centerFreq, bw: 0.1}); // Default 100kHz
+    setDemodOutName(proposed);
+    setShowDemodModal(true);
+  };
+
+  const startDemod = async () => {
+    setShowDemodModal(false);
+    setLoading(true);
+    setDemodAudioUrl(null);
+    setDemodAudioSpecUrl(null);
+    try {
+      const res = await fetch('/api/run/demod', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input_file: file,
+          target_freq: demodParams.center * 1e6,
+          bandwidth: demodParams.bw * 1e6,
+          audio_rate: Number(demodAudioRate),
+          demod_type: demodType
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Error demodulating: " + (data.detail || JSON.stringify(data)));
+      } else {
+        await fetchFiles();
+        // Fetch the symmetric waveform plot for this WAV file
+        let newSpecUrl = null;
+        const plotRes = await fetch('/api/run/plot_audio_waveform', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input_file: data.output_file,
+              width: 800,
+              height: 200,
+              theme: 'dark',
+              fill_color: fftColor
+            })
+        });
+        if (plotRes.ok) {
+            const plotData = await plotRes.json();
+            newSpecUrl = `/api/data/${plotData.output_file}`;
+        }
+        
+        setPanels(prev => {
+            const newPanel = {
+                id: 'demod-audio',
+                type: 'audio',
+                title: `${demodType} Audio Demodulator`,
+                audioUrl: `/api/data/${data.output_file}`,
+                specUrl: newSpecUrl,
+                outName: demodOutName
+            };
+            if (prev.find(p => p.id === 'demod-audio')) {
+                return prev.map(p => p.id === 'demod-audio' ? newPanel : p);
+            }
+            return [...prev, newPanel];
+        });
+      }
+    } catch(e) {
+      alert("Request failed: " + e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const startFilter = async () => {
@@ -1165,6 +1248,7 @@ function App() {
               <button onClick={() => { setFilterOutName(`${file.split('.')[0]}_filtered.prm`); setShowFilterModal(true); }} style={{margin: 0}} disabled={!fileInfo}>Filter</button>
               <button onClick={() => { setResampleOutName(`${file.split('.')[0]}_resampled.prm`); setShowResampleModal(true); }} style={{margin: 0}} disabled={!fileInfo}>Resample</button>
               <button onClick={() => { setWhitenOutName(`${file.split('.')[0]}_whitened.prm`); setShowWhitenModal(true); }} style={{margin: 0}} disabled={!fileInfo}>Whiten</button>
+              <button onClick={openDemod} style={{margin: 0}} disabled={!fileInfo}>Demodulate</button>
             </div>
           </div>
           
@@ -1215,6 +1299,8 @@ function App() {
             <button style={{flex: 1, padding: '8px 4px', fontSize: '0.8rem'}} onClick={() => handleStaticPlot('time_domain')} disabled={loading}>Time Domain</button>
             <button style={{flex: 1, padding: '8px 4px', fontSize: '0.8rem'}} onClick={() => handleStaticPlot('constellation')} disabled={loading || fileInfo?.channels !== 2} title={fileInfo?.channels !== 2 ? "Requires Complex Data" : ""}>Constellation</button>
           </div>
+
+
           
         </div>
 
@@ -1297,6 +1383,17 @@ function App() {
                         </div>
                       </>
                     )}
+                  </div>
+              ) : panel.type === 'audio' ? (
+                  <div style={{flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', minHeight: '200px'}}>
+                      <div style={{fontSize: '0.8rem', marginBottom: '5px', wordBreak: 'break-all'}}>{panel.outName}</div>
+                      <audio controls src={panel.audioUrl} style={{width: '100%', marginBottom: '10px'}} autoPlay></audio>
+                      {panel.specUrl && (
+                          <div style={{flex: 1, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
+                              <img src={panel.specUrl} alt="Audio Waveform" style={{width: '100%', height: 'calc(100% - 40px)', objectFit: 'fill', borderRadius: '4px', border: '1px solid var(--border-color)'}} />
+                          </div>
+                      )}
+                      <a href={panel.audioUrl} download={panel.outName} style={{marginTop: '10px', display: 'block', textAlign: 'center', background: 'var(--border-color)', padding: '5px', borderRadius: '4px', color: 'var(--text-color)', textDecoration: 'none', fontSize: '0.9rem'}}>Download WAV</a>
                   </div>
               ) : (
                   <div style={{flex: 1, position: 'relative', minHeight: '200px', overflow: 'hidden'}}>
@@ -1491,6 +1588,48 @@ function App() {
               <div style={{display: 'flex', gap: '10px', marginTop: '10px'}}>
                 <button onClick={() => setShowTunerModal(false)} style={{flex: 1, background: 'var(--border-color)', margin: 0}}>Cancel</button>
                 <button onClick={startTuner} style={{flex: 1, background: 'var(--accent-color)', color: '#000', margin: 0, fontWeight: 'bold'}}>Tune</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDemodModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.8)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <div style={{
+            background: 'var(--panel-bg)', padding: '20px', borderRadius: '8px',
+            width: '400px', border: '1px solid var(--border-color)', boxShadow: '0 10px 30px rgba(0,0,0,0.5)'
+          }}>
+            <h2 style={{marginTop: 0, color: 'var(--accent-color)'}}>{demodType} Demodulator</h2>
+            <div style={{display: 'flex', flexDirection: 'column', gap: '15px'}}>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Demodulation Type</label>
+                <select value={demodType} onChange={e => setDemodType(e.target.value)} style={{width: '100%', padding: '8px', boxSizing: 'border-box'}}>
+                  <option value="FM">FM (Frequency Modulation)</option>
+                  <option value="AM">AM (Amplitude Modulation)</option>
+                  <option value="USB">USB (Upper Sideband)</option>
+                  <option value="LSB">LSB (Lower Sideband)</option>
+                </select>
+              </div>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Target Center Freq (MHz)</label>
+                <input type="text" value={demodParams.center} onChange={e => setDemodParams({...demodParams, center: e.target.value})} style={{width: '100%', padding: '8px', boxSizing: 'border-box'}} />
+              </div>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Channel Bandwidth (MHz)</label>
+                <input type="text" value={demodParams.bw} onChange={e => setDemodParams({...demodParams, bw: e.target.value})} style={{width: '100%', padding: '8px', boxSizing: 'border-box'}} />
+              </div>
+              <div>
+                <label style={{display: 'block', marginBottom: '5px'}}>Target Audio Rate (Hz)</label>
+                <input type="text" value={demodAudioRate} onChange={e => setDemodAudioRate(e.target.value)} style={{width: '100%', padding: '8px', boxSizing: 'border-box'}} />
+              </div>
+              <div style={{display: 'flex', gap: '10px', marginTop: '10px'}}>
+                <button onClick={() => setShowDemodModal(false)} style={{flex: 1, background: 'var(--border-color)', margin: 0}}>Cancel</button>
+                <button onClick={startDemod} style={{flex: 1, background: 'var(--accent-color)', color: '#000', margin: 0, fontWeight: 'bold'}}>Demodulate</button>
               </div>
             </div>
           </div>

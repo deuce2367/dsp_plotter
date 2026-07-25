@@ -5,15 +5,20 @@ import shutil
 import math
 import datetime
 import subprocess
-from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from fastapi.responses import FileResponse, Response
+from typing import List, Optional
+import numpy as np
+import scipy.io.wavfile as wavfile
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 import dsp_wrapper
 import time
 import asyncio
 import collections
-from typing import Optional
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -107,7 +112,14 @@ class PlotRequest(BaseModel):
     width: int = 1024
     height: int = 512
     theme: str = "dark"
+    theme: str = "dark"
     fill_mode: str = "gradient"
+
+class PlotAudioWaveformRequest(BaseModel):
+    input_file: str
+    width: int = 800
+    height: int = 200
+    theme: str = "dark"
     fill_color: str = "#00FF00"
     zmin: Optional[float] = None
     zmax: Optional[float] = None
@@ -123,13 +135,20 @@ class ConvertRequest(BaseModel):
 class TunerRequest(BaseModel):
     input_file: str
     output_file: str
-    center_freq: float # in Hz
-    bandwidth: float # in Hz
-    start_time: float # in seconds
-    duration: float # in seconds
-    file_center: float # in Hz
+    center_freq: float
+    bandwidth: float
+    start_time: float = 0.0
+    duration: float = 0.0
+    file_center: float = 0.0
     quality: str = "normal"
     oversample: int = 1
+
+class DemodRequest(BaseModel):
+    input_file: str
+    target_freq: float
+    bandwidth: float
+    audio_rate: float = 48000.0
+    demod_type: str = "FM"
 
 class UpdateRequest(BaseModel):
     timecode: str = ""
@@ -360,6 +379,26 @@ async def run_psd(req: PSDRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/run/demod")
+async def run_demod(req: DemodRequest):
+    try:
+        input_path = os.path.join(DATA_DIR, req.input_file)
+        if not os.path.exists(input_path):
+            raise HTTPException(status_code=404, detail="Input file not found")
+
+        out_id = f"demod_{uuid.uuid4().hex[:8]}.wav"
+        output_path = os.path.join(DATA_DIR, out_id)
+        
+        # We run the C++ pipeline purely in memory and it writes output_path
+        import dsp_plotter_py
+        await asyncio.to_thread(
+            dsp_plotter_py.demodulate_pipeline,
+            input_path, output_path, req.target_freq, req.bandwidth, req.audio_rate, req.demod_type
+        )
+        return {"status": "success", "output_file": out_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/run/time_domain")
 async def run_time_domain(req: TimeDomainRequest):
     try:
@@ -542,6 +581,63 @@ def upload_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"status": "success", "filename": file.filename}
+
+
+def generate_audio_waveform_plot(input_path: str, output_path: str, req: PlotAudioWaveformRequest):
+    rate, data = wavfile.read(input_path)
+    
+    # Decimate data for faster plotting if it's too long
+    max_points = 8000
+    if len(data) > max_points:
+        step = len(data) // max_points
+        data = data[::step]
+    
+    # Assuming data is stereo (N, 2), we plot Left and -Right
+    if len(data.shape) > 1 and data.shape[1] >= 2:
+        left = data[:, 0]
+        right = -data[:, 1]
+    else:
+        left = data
+        right = -data
+
+    dpi = 100
+    fig, ax = plt.subplots(figsize=(req.width / dpi, req.height / dpi), dpi=dpi)
+    
+    # Colors based on theme
+    bg_color = '#1e1e1e' if req.theme == 'dark' else '#ffffff'
+    line_color = req.fill_color
+    
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
+    
+    time = np.linspace(0, len(data) / rate, num=len(data))
+    
+    ax.plot(time, left, color=line_color, linewidth=0.5, alpha=0.8)
+    ax.plot(time, right, color=line_color, linewidth=0.5, alpha=0.8)
+    ax.fill_between(time, left, right, color=line_color, alpha=0.2)
+    
+    ax.axis('off')
+    plt.tight_layout(pad=0)
+    plt.savefig(output_path, facecolor=bg_color, edgecolor='none')
+    plt.close(fig)
+
+@app.post("/api/run/plot_audio_waveform")
+async def run_plot_audio_waveform(req: PlotAudioWaveformRequest):
+    """
+    Generate a symmetric time-domain waveform plot for a stereo WAV file.
+    """
+    out_id = f"audio_plot_{uuid.uuid4().hex[:8]}.jpg"
+    in_path = os.path.join(DATA_DIR, req.input_file)
+    out_path = os.path.join(DATA_DIR, out_id)
+    
+    if not os.path.exists(in_path):
+        raise HTTPException(status_code=404, detail="Input file not found")
+        
+    try:
+        await asyncio.to_thread(generate_audio_waveform_plot, in_path, out_path, req)
+        return {"status": "success", "output_file": out_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Serve static frontend files if they exist (built via vite)
 frontend_dir = os.path.join(os.path.dirname(__file__), "../frontend/dist")

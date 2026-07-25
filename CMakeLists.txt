@@ -86,6 +86,17 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
+# Liquid-DSP
+FetchContent_Declare(
+  liquid
+  GIT_REPOSITORY https://github.com/jgaeddert/liquid-dsp.git
+  GIT_TAG        master
+)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-variable -Wno-unused-but-set-variable")
+FetchContent_MakeAvailable(liquid)
+
 add_executable(dsp_plotter
     main.cpp
     dsp_engine.cpp
@@ -178,14 +189,21 @@ endif()
 target_link_libraries(dsp_psd PRIVATE kfr kfr_dft kfr_dsp kfr_io CLI11::CLI11 spdlog::spdlog)
 target_compile_options(dsp_psd PRIVATE -Wno-stringop-overflow)
 
+add_executable(dsp_demod dsp_demod.cpp dsp_demod_lib.cpp dsp_tuner_lib.cpp)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(dsp_demod PUBLIC OpenMP::OpenMP_CXX)
+endif()
+target_link_libraries(dsp_demod PRIVATE kfr kfr_dft kfr_dsp kfr_io liquid-static CLI11::CLI11 spdlog::spdlog)
+target_compile_options(dsp_demod PRIVATE -Wno-stringop-overflow)
+
 # Python bindings
-pybind11_add_module(dsp_plotter_py python_bindings.cpp dsp_engine.cpp plot_generator.cpp dsp_convert_lib.cpp dsp_tuner_lib.cpp dsp_time_domain_lib.cpp dsp_filter.cpp dsp_resample.cpp dsp_whitener.cpp)
+pybind11_add_module(dsp_plotter_py python_bindings.cpp dsp_engine.cpp plot_generator.cpp dsp_convert_lib.cpp dsp_tuner_lib.cpp dsp_time_domain_lib.cpp dsp_demod_lib.cpp dsp_filter.cpp dsp_resample.cpp dsp_whitener.cpp)
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     target_compile_options(dsp_plotter_py PRIVATE "-flto=auto")
     target_link_options(dsp_plotter_py PRIVATE "-flto=auto")
 endif()
 target_compile_definitions(dsp_plotter_py PRIVATE DSP_TOOLS_PYTHON_MODULE=1)
-target_link_libraries(dsp_plotter_py PRIVATE kfr kfr_dft kfr_io kfr_dsp spdlog::spdlog)
+target_link_libraries(dsp_plotter_py PRIVATE kfr kfr_dft kfr_io kfr_dsp liquid-static spdlog::spdlog)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(dsp_plotter_py PRIVATE OpenMP::OpenMP_CXX)
 endif()

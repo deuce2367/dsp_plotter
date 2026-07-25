@@ -35,10 +35,14 @@ std::string format_timecode(double timecode) {
     return std::string(buffer);
 }
 
+extern void demodulate_pipeline(const std::string& input_file, const std::string& output_wav, double target_freq, double bandwidth, double audio_rate, const std::string& demod_type);
+
 namespace py = pybind11;
 
 PYBIND11_MODULE(dsp_plotter_py, m) {
     m.doc() = "DSP Plotter Python bindings";
+
+    m.def("demodulate_pipeline", &demodulate_pipeline, "Run Demodulation pipeline to WAV");
 
     py::class_<DspEngine::StreamConfig>(m, "StreamConfig")
         .def(py::init<>())
